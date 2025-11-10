@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: buzzic
+    env: node
+    rootDir: server
+    buildCommand: |
+      npm ci
+      cd ../client && npm ci && npm run build
+    startCommand: node server.js
+    plan: free
+    autoDeploy: true
