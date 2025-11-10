@@ -5,6 +5,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import fetch from "node-fetch";
 
+// --- Resolve path helpers (Works on Render) ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -14,14 +15,22 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// --- Directories ---
 const DATA_DIR = path.join(__dirname, "data");
 const CACHE_DIR = path.join(__dirname, "cache");
 const CLIENT_DIST = path.join(__dirname, "..", "client", "dist");
-if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
+
+// Create cache folder if missing
+if (!fs.existsSync(CACHE_DIR)) {
+  fs.mkdirSync(CACHE_DIR, { recursive: true });
+}
 
 // ---------- Music helpers ----------
 const NOTES_SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-const SOLFEGE = {"C":"DO","C#":"DO#","D":"RE","D#":"RE#","E":"MI","F":"FA","F#":"FA#","G":"SOL","G#":"SOL#","A":"LA","A#":"LA#","B":"SI"};
+const SOLFEGE = {
+  "C":"DO","C#":"DO#","D":"RE","D#":"RE#","E":"MI","F":"FA","F#":"FA#",
+  "G":"SOL","G#":"SOL#","A":"LA","A#":"LA#","B":"SI"
+};
 const RECIPES = {
   "Ionien": [0,2,4,5,7,9,11],
   "Dorien": [0,2,3,5,7,9,10],
@@ -45,7 +54,9 @@ const HARMONIZATION = {
 };
 
 function noteIndex(n) {
-  const mapSolfege = Object.fromEntries(Object.entries(SOLFEGE).map(([k,v]) => [v, k]));
+  const mapSolfege = Object.fromEntries(
+    Object.entries(SOLFEGE).map(([k, v]) => [v, k])
+  );
   n = String(n).trim().toUpperCase();
   if (n.includes(" - ")) n = n.split(" - ")[0].trim();
   if (mapSolfege[n]) n = mapSolfege[n];
@@ -55,79 +66,98 @@ function noteIndex(n) {
   const idx = NOTES_SHARP.indexOf(n);
   return idx >= 0 ? idx : 0;
 }
+
 function buildScale(tonic, recipe) {
   const i = noteIndex(tonic);
   return recipe.map(step => NOTES_SHARP[(i + step) % 12]);
 }
 
-// ---------- Data ----------
+// ---------- Static data files ----------
 app.get("/api/:file", (req, res) => {
   const f = req.params.file;
   const full = path.join(DATA_DIR, `${f}.json`);
   if (fs.existsSync(full)) {
     const raw = fs.readFileSync(full, "utf-8");
-    res.type("application/json").send(raw);
-  } else {
-    res.status(404).json({ error: "Not found" });
+    return res.type("application/json").send(raw);
   }
+  return res.status(404).json({ error: "Not found" });
 });
 
-// ---------- Songsterr (with 7-day cache) ----------
+// ---------- Songsterr with caching ----------
 app.get("/api/songsterr/:artist/:title", async (req, res) => {
-  const { artist, title } = req.params;
-  const key = `${artist}__${title}`.toLowerCase();
-  const cacheFile = path.join(CACHE_DIR, "songsterr.json");
-  let cache = {};
-  try { cache = JSON.parse(fs.readFileSync(cacheFile, "utf-8")); } catch { cache = {}; }
-
-  const now = Date.now();
-  const ttl = 7 * 24 * 3600 * 1000;
-  if (cache[key] && (now - cache[key].ts < ttl)) {
-    return res.json(cache[key].data);
-  }
-
   try {
+    const { artist, title } = req.params;
+    const key = `${artist}__${title}`.toLowerCase();
+    const cacheFile = path.join(CACHE_DIR, "songsterr.json");
+
+    let cache = {};
+    if (fs.existsSync(cacheFile)) {
+      cache = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+    }
+
+    const now = Date.now();
+    const ttl = 7 * 24 * 3600 * 1000;
+    if (cache[key] && (now - cache[key].ts < ttl)) {
+      return res.json(cache[key].data);
+    }
+
     const pattern = encodeURIComponent(`${artist} ${title}`);
     const apiUrl = `https://www.songsterr.com/a/ra/songs.json?pattern=${pattern}`;
     const r = await fetch(apiUrl);
     const data = await r.json();
     const searchUrl = `https://www.songsterr.com/?pattern=${pattern}`;
     const payload = { results: data, searchUrl };
+
     cache[key] = { ts: now, data: payload };
     fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf-8");
-    res.json(payload);
-  } catch (e) {
-    res.status(500).json({ error: "Songsterr fetch failed", details: e.message });
+
+    return res.json(payload);
+
+  } catch (err) {
+    return res.status(500).json({ error: "Songsterr fetch failed", details: err.message });
   }
 });
 
-// ---------- Platon enrichi ----------
+// ---------- Platon API ----------
 app.get("/api/platon", (req, res) => {
   const q = String(req.query.question || "").trim();
-  if (!q) return res.json({ answer: "Pose-moi une question musicale (ex: 'Quelle gamme pour un solo en Am ?')" });
+  if (!q) {
+    return res.json({ answer: "Pose-moi une question musicale (ex: 'Quelle gamme pour un solo en Am ?')" });
+  }
 
   const qUp = q.toUpperCase();
   const modeKeys = Object.keys(RECIPES);
   let detectedMode = modeKeys.find(m => qUp.includes(m.toUpperCase()));
+
   if (!detectedMode) {
-    detectedMode = qUp.includes("MÉLOD") || qUp.includes("MELOD") ? "Mineur mélodique"
-                  : qUp.includes("HARMON") ? "Mineur harmonique"
-                  : (qUp.includes("MAJEUR") || qUp.includes("IONIEN")) ? "Ionien"
-                  : (qUp.includes("MINEUR") || qUp.includes("ÉOLIEN") || qUp.includes("EOLIEN")) ? "Éolien"
-                  : "Ionien";
+    detectedMode =
+      qUp.includes("MÉLOD") || qUp.includes("MELOD") ? "Mineur mélodique" :
+      qUp.includes("HARMON") ? "Mineur harmonique" :
+      (qUp.includes("MAJEUR") || qUp.includes("IONIEN")) ? "Ionien" :
+      (qUp.includes("MINEUR") || qUp.includes("ÉOLIEN") || qUp.includes("EOLIEN")) ? "Éolien" :
+      "Ionien";
   }
+
   const tokens = qUp.replace("?"," ").split(/[\s,]+/);
   let tonic = "C";
   for (const t of tokens) {
-    if (["C","C#","D","D#","E","F","F#","G","G#","A","A#","B","DO","RE","MI","FA","SOL","LA","SI"].includes(t)) { tonic = t; break; }
-    if (/^[A-G](#)?M?$/.test(t)) { tonic = t[0] + (t[1]==="#"?"#":""); break; }
-    if (/^[A-G](#)?MIN$/.test(t) || /^[A-G](#)?M$/.test(t)) { tonic = t[0] + (t[1]==="#"?"#":""); detectedMode = detectedMode || "Éolien"; break; }
+    if (["C","C#","D","D#","E","F","F#","G","G#","A","A#","B","DO","RE","MI","FA","SOL","LA","SI"].includes(t)) {
+      tonic = t; break;
+    }
+    if (/^[A-G](#)?M?$/.test(t)) {
+      tonic = t[0] + (t[1]==="#"?"#":""); break;
+    }
+    if (/^[A-G](#)?MIN$/.test(t) || /^[A-G](#)?M$/.test(t)) {
+      tonic = t[0] + (t[1]==="#"?"#":"");
+      detectedMode = detectedMode || "Éolien";
+      break;
+    }
   }
 
   const recipe = RECIPES[detectedMode] || RECIPES["Ionien"];
   const notes = buildScale(tonic, recipe);
   const solfegeNotes = notes.map(n => `${n} - ${SOLFEGE[n]}`);
-  const harmon = (HARMONIZATION[detectedMode] || HARMONIZATION["Ionien"]);
+  const harmon = HARMONIZATION[detectedMode] || HARMONIZATION["Ionien"];
   const chords = harmon.map((h, i) => ({ degree: i+1, roman: h }));
 
   const answer = [
@@ -138,13 +168,20 @@ app.get("/api/platon", (req, res) => {
     `Astuce: repère la tonique sur le manche, puis ajoute 3ce & 7e pour colorer le mode.`
   ].join("\n");
 
-  res.json({ mode: detectedMode, tonic: notes[0], notes, notesSolfege: solfegeNotes, chords, answer });
+  return res.json({ mode: detectedMode, tonic: notes[0], notes, notesSolfege: solfegeNotes, chords, answer });
 });
 
-// ---------- Serve built frontend ----------
-app.use(express.static(CLIENT_DIST));
-app.get("*", (req, res) => {
-  res.sendFile(path.join(CLIENT_DIST, "index.html"));
-});
+// ---------- Serve client (Vite/React) ----------
+if (fs.existsSync(CLIENT_DIST)) {
+  app.use(express.static(CLIENT_DIST));
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(CLIENT_DIST, "index.html"));
+  });
+} else {
+  console.log("⚠️ CLIENT_DIST introuvable. Le frontend ne sera pas servi.");
+}
 
-app.listen(PORT, () => console.log(`Buzzic server running on http://localhost:${PORT}`));
+// ---------- Listen ----------
+app.listen(PORT, () => {
+  console.log(`✅ Buzzic server running on port ${PORT}`);
+});
