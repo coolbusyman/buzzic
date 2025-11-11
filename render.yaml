@@ -1,8 +1,0 @@
-services:
-  - type: web
-    name: buzzic
-    env: node
-    buildCommand: npm install && npm run render-build
-    startCommand: npm start
-    plan: free
-    autoDeploy: true
