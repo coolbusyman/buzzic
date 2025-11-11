@@ -5,12 +5,12 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import fetch from "node-fetch";
 
-// --- Resolve path helpers (Works on Render) ---
+// --- Resolve path helpers (Render compatible) ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -20,7 +20,7 @@ const DATA_DIR = path.join(__dirname, "data");
 const CACHE_DIR = path.join(__dirname, "cache");
 const CLIENT_DIST = path.join(__dirname, "client", "dist");
 
-// Create cache folder if missing
+// Create cache dir if missing
 if (!fs.existsSync(CACHE_DIR)) {
   fs.mkdirSync(CACHE_DIR, { recursive: true });
 }
@@ -72,18 +72,17 @@ function buildScale(tonic, recipe) {
   return recipe.map(step => NOTES_SHARP[(i + step) % 12]);
 }
 
-// ---------- Static data files ----------
+// ✅ Static local JSON data
 app.get("/api/:file", (req, res) => {
-  const f = req.params.file;
-  const full = path.join(DATA_DIR, `${f}.json`);
-  if (fs.existsSync(full)) {
-    const raw = fs.readFileSync(full, "utf-8");
-    return res.type("application/json").send(raw);
+  const full = path.join(DATA_DIR, `${req.params.file}.json`);
+  if (!fs.existsSync(full)) {
+    return res.status(404).json({ error: "Not found" });
   }
-  return res.status(404).json({ error: "Not found" });
+  const raw = fs.readFileSync(full, "utf-8");
+  res.type("application/json").send(raw);
 });
 
-// ---------- Songsterr with caching ----------
+// ✅ Songsterr + Caching
 app.get("/api/songsterr/:artist/:title", async (req, res) => {
   try {
     const { artist, title } = req.params;
@@ -102,23 +101,23 @@ app.get("/api/songsterr/:artist/:title", async (req, res) => {
     }
 
     const pattern = encodeURIComponent(`${artist} ${title}`);
-    const apiUrl = `https://www.songsterr.com/a/ra/songs.json?pattern=${pattern}`;
-    const r = await fetch(apiUrl);
+    const r = await fetch(`https://www.songsterr.com/a/ra/songs.json?pattern=${pattern}`);
     const data = await r.json();
-    const searchUrl = `https://www.songsterr.com/?pattern=${pattern}`;
-    const payload = { results: data, searchUrl };
+    const payload = {
+      results: data,
+      searchUrl: `https://www.songsterr.com/?pattern=${pattern}`
+    };
 
     cache[key] = { ts: now, data: payload };
     fs.writeFileSync(cacheFile, JSON.stringify(cache, null, 2), "utf-8");
 
     return res.json(payload);
-
   } catch (err) {
     return res.status(500).json({ error: "Songsterr fetch failed", details: err.message });
   }
 });
 
-// ---------- Platon API ----------
+// ✅ Platon API
 app.get("/api/platon", (req, res) => {
   const q = String(req.query.question || "").trim();
   if (!q) {
@@ -140,6 +139,7 @@ app.get("/api/platon", (req, res) => {
 
   const tokens = qUp.replace("?"," ").split(/[\s,]+/);
   let tonic = "C";
+
   for (const t of tokens) {
     if (["C","C#","D","D#","E","F","F#","G","G#","A","A#","B","DO","RE","MI","FA","SOL","LA","SI"].includes(t)) {
       tonic = t; break;
@@ -147,41 +147,34 @@ app.get("/api/platon", (req, res) => {
     if (/^[A-G](#)?M?$/.test(t)) {
       tonic = t[0] + (t[1]==="#"?"#":""); break;
     }
-    if (/^[A-G](#)?MIN$/.test(t) || /^[A-G](#)?M$/.test(t)) {
-      tonic = t[0] + (t[1]==="#"?"#":"");
-      detectedMode = detectedMode || "Éolien";
-      break;
-    }
   }
 
-  const recipe = RECIPES[detectedMode] || RECIPES["Ionien"];
+  const recipe = RECIPES[detectedMode];
   const notes = buildScale(tonic, recipe);
   const solfegeNotes = notes.map(n => `${n} - ${SOLFEGE[n]}`);
-  const harmon = HARMONIZATION[detectedMode] || HARMONIZATION["Ionien"];
-  const chords = harmon.map((h, i) => ({ degree: i+1, roman: h }));
+  const harmon = HARMONIZATION[detectedMode];
 
-  const answer = [
-    `Mode: ${detectedMode}`,
-    `Tonique: ${notes[0]} (${SOLFEGE[notes[0]]})`,
-    `Notes: ${solfegeNotes.join(", ")}`,
-    `Accords (triades typiques): ${harmon.join(", ")}`,
-    `Astuce: repère la tonique sur le manche, puis ajoute 3ce & 7e pour colorer le mode.`
-  ].join("\n");
-
-  return res.json({ mode: detectedMode, tonic: notes[0], notes, notesSolfege: solfegeNotes, chords, answer });
+  return res.json({
+    mode: detectedMode,
+    tonic: notes[0],
+    notes,
+    notesSolfege: solfegeNotes,
+    chords: harmon.map((h,i)=>({degree:i+1, roman:h}))
+  });
 });
 
-// ---------- Serve client (Vite/React) ----------
+// ✅ ✅ Serve the React/Vite frontend
 if (fs.existsSync(CLIENT_DIST)) {
+  console.log("✅ Frontend found, serving React from", CLIENT_DIST);
   app.use(express.static(CLIENT_DIST));
   app.get("*", (req, res) => {
     res.sendFile(path.join(CLIENT_DIST, "index.html"));
   });
 } else {
-  console.log("⚠️ CLIENT_DIST introuvable. Le frontend ne sera pas servi.");
+  console.log("⚠️ CLIENT_DIST introuvable — le frontend ne sera pas servi.");
 }
 
-// ---------- Listen ----------
+// ✅ Listen
 app.listen(PORT, () => {
   console.log(`✅ Buzzic server running on port ${PORT}`);
 });
