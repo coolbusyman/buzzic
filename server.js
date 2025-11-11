@@ -18,7 +18,7 @@ app.use(express.json());
 // --- Directories ---
 const DATA_DIR = path.join(__dirname, "data");
 const CACHE_DIR = path.join(__dirname, "cache");
-const CLIENT_DIST = path.join(__dirname, "..", "client", "dist");
+const CLIENT_DIST = path.join(__dirname, "client", "dist");
 
 // Create cache folder if missing
 if (!fs.existsSync(CACHE_DIR)) {
